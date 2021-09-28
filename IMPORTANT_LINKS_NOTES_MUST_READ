@@ -1,0 +1,20 @@
+https://utcc.utoronto.ca/~cks/space/blog/linux/ZFSBringUpOnBoot
+
+ZFS on Linux starts in three phases. First, pools are 'imported', with filesystems not mounted, using one of two methods that I'll get to. Then filesystems are mounted by running 'zfs mount -a' and the ZFS Event Daemon (ZED) is started. Finally, filesystems with the relevant ZFS properties are NFS exported or otherwise shared with 'zfs share -a'. If your NFS exports or other sharing isn't handled through ZFS properties, the third step doesn't do anything; instead it's handled through whatever other mechanism you're using.
+
+As mentioned, ZFS on Linux gives you two options for how to find and import your pools on boot; you can either scan your entire system and import any pools found, or you can (try to) import pools listed in /etc/zfs/zpool.cache. The two options are different ZFS systemd .service files; zfs-import-scan.service runs 'zpool import -aN -o cachefile=none', while zfs-import-cache.service runs 'zpool import -c /etc/zfs/zpool.cache -aN'. You configure which one you want by enabling one or the other, which makes it part of the zfs-import.target systemd target that everything else depends on. I think that most people using ZFS on Linux configure it to use zpool.cache, either automatically by the ZFS on Linux package making this choice for them (this is the current installation default) or manually.
+
+(Since I looked this up, ZFS on Linux does nothing to your pools in service units when you shut down the system. It's possible that the kernel ZFS on Linux marks pools as 'clean' during an orderly shutdown. In particular, ZFS doesn't run 'zpool export' on shutdown, at least at the user level.)
+
+You might wonder how ZFS pool import insures that all your disks are present before it tries to find your ZFS pools. The answer is that it makes a potentially generous assumption about when that will happen. Both import services depend on systemd-udev-settle.service, which waits for all queued udev events to be processed (they also want to be after cryptsetup, multipathd, and systemd-remount-fs). Waiting for all queued boot time udev events to have been processed doesn't guarantee that all devices will have appeared and been processed, but it's generally good enough on most systems. Odd systems may need to insert delays somehow.
+
+(I have no idea how or if this works if you have ZFS pools that are on zvols, or on files in ZFS filesystems. If you have ZFS pools on files in non-ZFS filesystems, I think you're hoping that the other filesystems get mounted fast enough.)
+
+There's also another wrinkle, concerning /etc/zfs/zpool.cache. The ZFS 'import cache' boot service naturally requires this file to exist and have some content in it. However, the ZFS 'import by scanning' service requires that this file either not exist or be empty. It's at least theoretically possible to blow up your 'import by scanning' by accidentally winding up with a zpool.cache file somehow (and if you're switching to importing by scanning, you'd better remove zpool.cache).
+
+Modern versions of ZFS on Linux have only three udev rules. The most important udev rule attempts to load the kernel module when udev sees a device that's a ZFS member. The other two rules create /dev/zvol/<what> symlinks for ZFS volumes and create the user friendly vdev names if you have a vdev_id.conf file for that.
+
+(These days I think that the ZFS commands may attempt to load the ZFS module if they detect that it's missing. This is definitely the most friendly approach, since otherwise you would have to manually insert the module before you created your very first ZFS pool on a new system.)
+
+PS: Based only on looking at the manual pages, not either experimentation or reading the code, I would expect the 'import by scanning' option to import pools that had been explicitly exported with 'zpool export'. I assume that it skips pools that appear to belong to other hosts or that otherwise seem active, since the 'zpool import' doesn't use the '-f' flag.
+
